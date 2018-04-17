@@ -4,22 +4,21 @@ __version__ = '1.0.0'
 __copyright__ = 'Copyright (c) 2018 John Berlin'
 __license__ = 'MIT'
 
-from concurrent.futures import ProcessPoolExecutor
 import argparse
 import csv
-import re
-import time
 import os
 import sys
-import requests
-from requests_futures.sessions import FuturesSession
+import time
 import ujson as json
-from goldfinch import validFileName as vfn
+from concurrent.futures import ProcessPoolExecutor
 
-FILE_NAME_RE = re.compile('[:/.-]+')
-NO_SCHEME_RE = re.compile('^http://')
+import requests
+from goldfinch import validFileName as vfn
+from requests_futures.sessions import FuturesSession
+
 
 DEFAULT_DL_URL = 'http://localhost:1208/timemap'
+"""Default memgator url"""
 
 
 def eprint(*args, **kwargs):
@@ -154,9 +153,10 @@ def main():
     parser.add_argument('-d', '--dump', help='Directory to dump the TimeMaps in. '
                                              'Defaults to <cwd>/timemaps',
                         default='timemaps', type=str)
-    parser.add_argument('-l', '--list', help='Path to file (.txt, .csv, .json) containing list of URLs. '
-                                             'File type detected by considering extension. '
-                                             'If .csv must supply -k <key> so we know where to get the url',
+    parser.add_argument('-l', '--list',
+                        help='Path to file (.txt, .csv, .json) containing list of '
+                             'URLs. File type detected by considering extension. '
+                             'If .csv must supply -k <key> so we know where to get the url',
                         required=True)
     parser.add_argument('-k', '--key', help='The csv key for the urls')
     format_group = parser.add_mutually_exclusive_group(required=True)
