@@ -1,6 +1,7 @@
+# -*- coding: utf-8 -*-
 __author__ = 'John Berlin (n0tan3rd@gmail.com)'
 __version__ = '1.0.0'
-__copyright__ = 'Copyright (c) 2018-Present John Berlin'
+__copyright__ = 'Copyright (c) 2018 John Berlin'
 __license__ = 'MIT'
 
 from concurrent.futures import ProcessPoolExecutor
@@ -8,93 +9,184 @@ import argparse
 import csv
 import re
 import time
-from glob import glob
 import os
+import sys
 import requests
 from requests_futures.sessions import FuturesSession
 import ujson as json
-
+from goldfinch import validFileName as vfn
 
 FILE_NAME_RE = re.compile('[:/.-]+')
 NO_SCHEME_RE = re.compile('^http://')
 
-UA_LIST = [
-    'Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:44.0) Gecko/20100101 Firefox/44.01',
-    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/'
-    '54.0.2840.71 Safari/537.36',
-    'Mozilla/5.0 (Linux; Ubuntu 14.04) AppleWebKit/537.36 Chromium/35.0.1870.2 Safa'
-    'ri/537.36',
-    'Mozilla/5.0 (Windows NT 6.1) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/41.'
-    '0.2228.0 Safari/537.36',
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko'
-    ') Chrome/42.0.2311.135 '
-    'Safari/537.36 Edge/12.246',
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_11_2) AppleWebKit/601.3.9 (KHTML, '
-    'like Gecko) Version/9.0.2 Safari/601.3.9',
-    'Mozilla/5.0 (Windows NT 6.1; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) '
-    'Chrome/47.0.2526.111 Safari/537.36',
-    'Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:54.0) Gecko/20100101 Firefox/54.0',
-]
-"""list[str]: user agent strings used when fetching the lists"""
+DEFAULT_DL_URL = 'http://localhost:1208/timemap'
 
 
-DEFAULT_DL_URL = 'http://localhost:1208/timemap/%s/%s'
+def eprint(*args, **kwargs):
+    """Helper function for printing to standard error"""
+    print(*args, file=sys.stderr, **kwargs)
 
-if __name__ == '__main__':
+
+def read_plaintext(textfile_path):
+    """
+    Generator that reads a plain text file containing URLs, one per line, yielding each URL
+    :param str textfile_path: Path to plain text file containing URLs
+    """
+    with open(textfile_path, 'r') as textin:
+        for line in textin:
+            yield line.rstrip()
+
+
+def read_csv(csv_path, key):
+    """
+    Generator that reads a csv file containing URLs, yielding each URL found using key
+    :param str csv_path: Path to plain csv file containing URLs
+    :param str key: CSV key for the URLs
+    """
+    with open(csv_path, 'r') as csvin:
+        for row in csv.DictReader(csvin):
+            yield row[key]
+
+
+def read_json(json_path):
+    """
+    Generator that reads a json file containing a list of URLs, yielding each URL found
+    :param str json_path: Path to plain json file containing URLs in a list
+    """
+    with open(json_path, 'r') as jsonin:
+        for url in json.load(jsonin):
+            yield url
+
+
+def sane_filename(url):
+    """
+    Turns a url into a sane filename. Replaces :// and / with _
+    then feeds url to goldfinch.validFileName
+    :param str url: The url to turn into a valid filename
+    :return str: A valid filename from the supplied url
+    """
+    return vfn(url.replace('://', '_').replace('/', '_'),
+               initCap=False).decode("utf-8")
+
+
+def file_name_path_creator(args):
+    """
+    Creates a function that will generate the co
+    :param args: Args object returned from the arg parser
+    :return: Function that creates TimeMap file name for the supplied url
+    """
+    if args.json:
+        the_ext = '.json'
+    elif args.link:
+        the_ext = '.link'
+    else:
+        the_ext = '.cdxj'
+
+    def creator(save_dir, url):
+        """
+        Creates the full path to TimeMap bases on save_dir, url and args configuration
+        :param str save_dir: Path to the directory the TimeMaps are saved in
+        :param str url: URL to be filenamified
+        :return: Path to TimeMap
+        """
+        sanity = sane_filename(url)
+        return os.path.join(save_dir, '%s.%s' % (sanity, the_ext))
+
+    return creator
+
+
+def batch_dl(args, file_path, url_generator):
+    """
+    Batch download TimeMaps from Memgator
+    :param args: Args object returned from the arg parser
+    :param file_path: Function returning the file path for the TimeMap from the URL
+    :param url_generator: Generator that generates URLs
+    """
+    with FuturesSession(session=requests.Session(),
+                        executor=ProcessPoolExecutor(max_workers=args.workers)) as session:
+        processed = 0
+        temp = []
+        for url in url_generator:
+            temp.append(url)
+            if len(temp) == args.requests:
+                pending = []
+                for request_url in temp:
+                    pending.append(
+                        (session.get(
+                            '%s/%s' %
+                            (args.url, request_url)), request_url))
+                for future, request_url in pending:
+                    try:
+                        response = future.result()
+                        if response.status_code == 200:
+                            with open(file_path(args.dump, request_url), 'w') as out:
+                                out.write(response.text)
+                        else:
+                            eprint(
+                                'The url %s did not get HTTP 200. It got %d' %
+                                (request_url, response.status_code))
+                    except Exception as e:
+                        eprint('The url %s got an exception' % request_url)
+                        eprint(e)
+                processed += args.requests
+                temp.clear()
+                print('Processed %d URLs' % processed)
+                print('----------------------------------------')
+                if processed % 60 == 0:
+                    time.sleep(25)
+                else:
+                    time.sleep(5)
+
+
+def main():
     parser = argparse.ArgumentParser(prog='download',
                                      description='Bulk download TimeMaps '
                                                  'using a local memgator instance')
     parser.add_argument('-u', '--url', help='URL for running memgator instance. '
-                                            'Defaults to http://localhost:1208/timemap',
+                                            'Defaults to http://localhost:1208/timemap/json',
                         default=DEFAULT_DL_URL, type=str)
     parser.add_argument('-w', '--workers', help='Max number of worker processes spawned. '
-                                                'Defaults to 10',
+                                                'Defaults to 5',
+                        default=5, type=int)
+    parser.add_argument('-r', '--requests', help='How many requests should be queued per chunk. '
+                                                 'Defaults to 10',
                         default=10, type=int)
+    parser.add_argument('-d', '--dump', help='Directory to dump the TimeMaps in. '
+                                             'Defaults to <cwd>/timemaps',
+                        default='timemaps', type=str)
+    parser.add_argument('-l', '--list', help='Path to file (.txt, .csv, .json) containing list of URLs. '
+                                             'File type detected by considering extension. '
+                                             'If .csv must supply -k <key> so we know where to get the url',
+                        required=True)
+    parser.add_argument('-k', '--key', help='The csv key for the urls')
     format_group = parser.add_mutually_exclusive_group(required=True)
     format_group.add_argument('-j', '--json',
-                              help='Download TimeMaps in json format',
+                              help='Download TimeMaps in json format. Default format',
                               default=True, action='store_true')
-    format_group.add_argument('-l', '--link',
+    format_group.add_argument('-n', '--link',
                               help='Download TimeMaps in link format',
                               action='store_false')
-    timeMapDir = '10k_timemaps'
-    uaLen = len(UA_LIST)
-    c = 0
-    processed = 0
-    temp = []
-    with open('alexaUrls/10k_fromLatestCrawl.csv', 'r') as urlIN:
-        with FuturesSession(session=requests.Session(), executor=ProcessPoolExecutor(max_workers=10)) as session:
-            for row in csv.DictReader(urlIN):
-                if not os.path.exists(
-                        '%s/%s.json' % (timeMapDir, '%s-%s' % (FILE_NAME_RE.sub('', row['url']), row['rank']))):
-                    temp.append(row)
-                else:
-                    print('exists', row)
-                    continue
+    format_group.add_argument('-c', '--cdxj',
+                              help='Download TimeMaps in cdxj format',
+                              action='store_false')
+    args = parser.parse_args()
+    url_file = args.list
+    _, ext = os.path.splitext(url_file)
+    if ext == '.txt':
+        url_generator = read_plaintext(url_file)
+    elif ext == '.csv':
+        url_generator = read_csv(url_file, args.key)
+    elif ext == '.json':
+        url_generator = read_json(url_file)
+    else:
+        raise ValueError(
+            'Invalid file extension %s, we do not know how to parse this file type' %
+            ext)
+    if not os.path.exists(args.dump):
+        os.makedirs(args.dump, exist_ok=True)
+    fp_function = file_name_path_creator(args)
+    batch_dl(args, fp_function, url_generator)
 
-                if len(temp) >= 20:
-                    pending = []
-                    for r in temp:
-                        pending.append(
-                            (session.get(qurl % NO_SCHEME_RE.sub('', r['url']).rstrip('/')),
-                             '%s/%s.json' % (timeMapDir, '%s-%s' %
-                                             (FILE_NAME_RE.sub('', r['url']), r['rank'])),
-                             r['url']))
-                    for future, fpath, url in pending:
-                        try:
-                            response = future.result()
-                            if response.status_code == 200:
-                                with open(fpath, 'w') as out:
-                                    out.write(response.text)
-                            else:
-                                print('baddd', url)
-                        except Exception as e:
-                            print(e, url)
-                    processed += 20
-                    temp.clear()
-                    print('process %d' % processed)
-                    print('----------------------------------------')
-                    if processed % 60 == 0:
-                        time.sleep(25)
-                    else:
-                        time.sleep(5)
+
+if __name__ == '__main__':
+    main()
