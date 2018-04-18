@@ -12,13 +12,13 @@ import sys
 import time
 import ujson as json
 from concurrent.futures import ProcessPoolExecutor
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urljoin
 
 import requests
 from goldfinch import validFileName as vfn
 from requests_futures.sessions import FuturesSession
 
-DEFAULT_DL_URL = 'http://localhost:1208/timemap'
+DEFAULT_DL_URL = 'http://localhost:1208'
 """Default memgator url"""
 
 NO_SCHEME = re.compile('^https?://')
@@ -45,6 +45,9 @@ def check_memgator(memurl):
     :raise MemgatorUnreachableError: If the head requests did not receive an
     HTTP 200 response or some other error occurred
     """
+    mu_re = re.compile('/timemap(?:/[a-z]{4})?$')
+    if not mu_re.search(memurl):
+        memurl = memurl + '/timemap'
 
     if not NO_SCHEME.match(memurl):
         memurl = 'http://' + memurl
@@ -213,7 +216,7 @@ def main():
         '-m',
         '--memurl',
         help='URL for running memgator instance. '
-             'Defaults to http://localhost:1208/timemap/json',
+             'Defaults to http://localhost:1208',
         default=DEFAULT_DL_URL,
         type=str)
     parser.add_argument(
@@ -255,19 +258,22 @@ def main():
     format_group.add_argument('-c', '--cdxj',
                               help='Download TimeMaps in cdxj format',
                               action='store_true')
-    args = parser.parse_args()
 
+    args = parser.parse_args()
     memurl = check_memgator(args.memurl)
 
-    if args.json:
-        murl = '%s/%s' % (memurl, 'json')
-        ext = '.json'
-    elif args.link:
-        murl = '%s/%s' % (memurl, 'link')
+    if args.link:
+        murl = '%s/%s' % (memurl, 'link') \
+            if not memurl.endswith('link') else memurl
         ext = '.link'
-    else:
-        murl = '%s/%s' % (memurl, 'cdxj')
+    elif args.cdxj:
+        murl = '%s/%s' % (memurl, 'cdxj') \
+            if not memurl.endswith('cdxj') else memurl
         ext = '.cdxj'
+    else:
+        murl = '%s/%s' % (memurl, 'json') \
+            if not memurl.endswith('json') else memurl
+        ext = '.json'
 
     if not os.path.exists(args.dump):
         os.makedirs(args.dump, exist_ok=True)
